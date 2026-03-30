@@ -42,6 +42,9 @@ type Config struct {
 	// AuthDir is the directory where authentication token files are stored.
 	AuthDir string `yaml:"auth-dir" json:"-"`
 
+	// AutoCleanAuth configures automatic credential cleaning and periodic availability checks.
+	AutoCleanAuth AutoCleanAuth `yaml:"auto-clean-auth" json:"auto-clean-auth"`
+
 	// Debug enables or disables debug-level logging and other debug features.
 	Debug bool `yaml:"debug" json:"debug"`
 
@@ -184,6 +187,15 @@ type RemoteManagement struct {
 	// PanelGitHubRepository overrides the GitHub repository used to fetch the management panel asset.
 	// Accepts either a repository URL (https://github.com/org/repo) or an API releases endpoint.
 	PanelGitHubRepository string `yaml:"panel-github-repository"`
+}
+
+// AutoCleanAuth configures automatic credential cleaning and periodic availability checks.
+type AutoCleanAuth struct {
+	Enable         bool     `yaml:"enable" json:"enable"`
+	IntervalHours  int      `yaml:"interval-hours" json:"interval-hours"`
+	ErrorKeywords  []string `yaml:"error-keywords" json:"error-keywords"`
+	BackupDir      string   `yaml:"backup-dir" json:"backup-dir"`
+	MaxConcurrency int      `yaml:"max-concurrency" json:"max-concurrency"`
 }
 
 // QuotaExceeded defines the behavior when API quota limits are exceeded.
@@ -572,6 +584,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.AutoCleanAuth.Enable = false
+	cfg.AutoCleanAuth.IntervalHours = 24
+	cfg.AutoCleanAuth.MaxConcurrency = 5
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
@@ -630,6 +645,16 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	if cfg.MaxRetryCredentials < 0 {
 		cfg.MaxRetryCredentials = 0
+	}
+
+	if cfg.AutoCleanAuth.Enable {
+		if cfg.AutoCleanAuth.IntervalHours <= 0 {
+			cfg.AutoCleanAuth.IntervalHours = 24
+		}
+		if cfg.AutoCleanAuth.MaxConcurrency <= 0 {
+			cfg.AutoCleanAuth.MaxConcurrency = 5
+		}
+		cfg.AutoCleanAuth.BackupDir = strings.TrimSpace(cfg.AutoCleanAuth.BackupDir)
 	}
 
 	// Sanitize Gemini API key configuration and migrate legacy entries.

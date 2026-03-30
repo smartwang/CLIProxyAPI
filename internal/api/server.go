@@ -301,6 +301,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		s.registerManagementRoutes()
 	}
 
+	// Start continuous background self-maintenance for auth tokens.
+	s.mgmt.StartAutoAuthMaintainer(context.Background())
+
 	if optionState.keepAliveEnabled {
 		s.enableKeepAlive(optionState.keepAliveTimeout, optionState.keepAliveOnTimeout)
 	}

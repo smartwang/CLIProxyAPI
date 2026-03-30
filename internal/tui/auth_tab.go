@@ -25,16 +25,18 @@ var authEditableFields = []editableField{
 
 // authTabModel displays auth credential files with interactive management.
 type authTabModel struct {
-	client   *Client
-	viewport viewport.Model
-	files    []map[string]any
-	err      error
-	width    int
-	height   int
-	ready    bool
-	cursor   int
-	expanded int // -1 = none expanded, >=0 = expanded index
-	confirm  int // -1 = no confirmation, >=0 = confirm delete for index
+	client       *Client
+	viewport     viewport.Model
+	files        []map[string]any
+	filtered     []map[string]any
+	filterErrors bool
+	err          error
+	width        int
+	height       int
+	ready        bool
+	cursor       int
+	expanded     int // -1 = none expanded, >=0 = expanded index
+	confirm      int // -1 = no confirmation, >=0 = confirm delete for index
 	status   string
 
 	// Editing state
@@ -65,6 +67,21 @@ func newAuthTabModel(client *Client) authTabModel {
 	}
 }
 
+func (m *authTabModel) applyFilter() {
+	if !m.filterErrors {
+		m.filtered = m.files
+		return
+	}
+	m.filtered = make([]map[string]any, 0)
+	for _, f := range m.files {
+		status := getAnyString(f, "status")
+		disabled := getBool(f, "disabled")
+		if disabled || strings.EqualFold(status, "error") {
+			m.filtered = append(m.filtered, f)
+		}
+	}
+}
+
 func (m authTabModel) Init() tea.Cmd {
 	return m.fetchFiles
 }
@@ -85,8 +102,9 @@ func (m authTabModel) Update(msg tea.Msg) (authTabModel, tea.Cmd) {
 		} else {
 			m.err = nil
 			m.files = msg.files
-			if m.cursor >= len(m.files) {
-				m.cursor = max(0, len(m.files)-1)
+			m.applyFilter()
+			if m.cursor >= len(m.filtered) {
+				m.cursor = max(0, len(m.filtered)-1)
 			}
 			m.status = ""
 		}
@@ -125,10 +143,10 @@ func (m authTabModel) Update(msg tea.Msg) (authTabModel, tea.Cmd) {
 
 // startEdit activates inline editing for a field on the currently selected auth file.
 func (m *authTabModel) startEdit(fieldIdx int) tea.Cmd {
-	if m.cursor >= len(m.files) {
+	if m.cursor >= len(m.filtered) {
 		return nil
 	}
-	f := m.files[m.cursor]
+	f := m.filtered[m.cursor]
 	m.editFileName = getString(f, "name")
 	m.editField = fieldIdx
 	m.editing = true
@@ -171,7 +189,7 @@ func (m authTabModel) renderContent() string {
 	sb.WriteString("\n")
 	sb.WriteString(helpStyle.Render(T("auth_help1")))
 	sb.WriteString("\n")
-	sb.WriteString(helpStyle.Render(T("auth_help2")))
+	sb.WriteString(helpStyle.Render(T("auth_help2") + " • (v) toggle error view • (X) clear all errors"))
 	sb.WriteString("\n")
 	sb.WriteString(strings.Repeat("─", m.width))
 	sb.WriteString("\n")
@@ -182,13 +200,13 @@ func (m authTabModel) renderContent() string {
 		return sb.String()
 	}
 
-	if len(m.files) == 0 {
+	if len(m.filtered) == 0 {
 		sb.WriteString(subtitleStyle.Render(T("no_auth_files")))
 		sb.WriteString("\n")
 		return sb.String()
 	}
 
-	for i, f := range m.files {
+	for i, f := range m.filtered {
 		name := getString(f, "name")
 		channel := getString(f, "channel")
 		email := getString(f, "email")
@@ -372,8 +390,8 @@ func (m authTabModel) handleConfirmInput(msg tea.KeyMsg) (authTabModel, tea.Cmd)
 	case "y", "Y":
 		idx := m.confirm
 		m.confirm = -1
-		if idx < len(m.files) {
-			name := getString(m.files[idx], "name")
+		if idx < len(m.filtered) {
+			name := getString(m.filtered[idx], "name")
 			return m, func() tea.Msg {
 				err := m.client.DeleteAuthFile(name)
 				if err != nil {
@@ -395,14 +413,14 @@ func (m authTabModel) handleConfirmInput(msg tea.KeyMsg) (authTabModel, tea.Cmd)
 func (m authTabModel) handleNormalInput(msg tea.KeyMsg) (authTabModel, tea.Cmd) {
 	switch msg.String() {
 	case "j", "down":
-		if len(m.files) > 0 {
-			m.cursor = (m.cursor + 1) % len(m.files)
+		if len(m.filtered) > 0 {
+			m.cursor = (m.cursor + 1) % len(m.filtered)
 			m.viewport.SetContent(m.renderContent())
 		}
 		return m, nil
 	case "k", "up":
-		if len(m.files) > 0 {
-			m.cursor = (m.cursor - 1 + len(m.files)) % len(m.files)
+		if len(m.filtered) > 0 {
+			m.cursor = (m.cursor - 1 + len(m.filtered)) % len(m.filtered)
 			m.viewport.SetContent(m.renderContent())
 		}
 		return m, nil
@@ -415,14 +433,14 @@ func (m authTabModel) handleNormalInput(msg tea.KeyMsg) (authTabModel, tea.Cmd) 
 		m.viewport.SetContent(m.renderContent())
 		return m, nil
 	case "d", "D":
-		if m.cursor < len(m.files) {
+		if m.cursor < len(m.filtered) {
 			m.confirm = m.cursor
 			m.viewport.SetContent(m.renderContent())
 		}
 		return m, nil
 	case "e", "E":
-		if m.cursor < len(m.files) {
-			f := m.files[m.cursor]
+		if m.cursor < len(m.filtered) {
+			f := m.filtered[m.cursor]
 			name := getString(f, "name")
 			disabled := getBool(f, "disabled")
 			newDisabled := !disabled
@@ -448,6 +466,20 @@ func (m authTabModel) handleNormalInput(msg tea.KeyMsg) (authTabModel, tea.Cmd) 
 	case "r":
 		m.status = ""
 		return m, m.fetchFiles
+	case "v", "V":
+		m.filterErrors = !m.filterErrors
+		m.applyFilter()
+		m.cursor = 0
+		m.viewport.SetContent(m.renderContent())
+		return m, nil
+	case "X":
+		return m, func() tea.Msg {
+			err := m.client.DeleteAuthFilesByStatus("error")
+			if err != nil {
+				return authActionMsg{err: err}
+			}
+			return authActionMsg{action: "Cleared all error credentials"}
+		}
 	default:
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)

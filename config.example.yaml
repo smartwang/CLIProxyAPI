@@ -35,6 +35,24 @@ remote-management:
 # Authentication directory (supports ~ for home directory)
 auth-dir: "~/.cli-proxy-api"
 
+# Automatic credential cleaning and periodic availability checks
+auto-clean-auth:
+  enable: false
+  # Frequency of availability checks and cleanup (in hours)
+  interval-hours: 24
+  # Keywords that mark a credential as hopelessly failed and needing backup/clean
+  error-keywords:
+    - "token_revoked"
+    - "account_deactivated"
+    - "invalid_grant"
+    - "invalid_api_key"         # 追加：用于识别封号或无效 Key
+    - "insufficient_quota"      # 追加：用于识别欠费
+    - "token_invalidated"
+  # Target directory to move the failed credentials (relative to auth-dir, e.g. "backup")
+  backup-dir: "backup"
+  # Maximum concurrent active checks during a batch token refresh operation
+  max-concurrency: 5
+
 # API keys for authentication
 api-keys:
   - "your-api-key-1"

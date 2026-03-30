@@ -667,6 +667,55 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
+
+	statusFilter := strings.TrimSpace(c.Query("status"))
+	problemType := strings.TrimSpace(c.Query("problem_type"))
+
+	if statusFilter != "" || problemType != "" {
+		auths := h.authManager.List()
+		deleted := 0
+		var failed []gin.H
+
+		for _, auth := range auths {
+			if auth == nil {
+				continue
+			}
+			authStatus := strings.TrimSpace(string(auth.Status))
+
+			if statusFilter != "" && !strings.EqualFold(authStatus, statusFilter) {
+				continue
+			}
+
+			if problemType != "" && !strings.Contains(strings.ToLower(auth.StatusMessage), strings.ToLower(problemType)) {
+				continue
+			}
+
+			effProblem := problemType
+			if effProblem == "" {
+				effProblem = auth.StatusMessage
+			}
+
+			_, _, errDelete := h.safeBackupAndDelete(ctx, auth, effProblem)
+			if errDelete != nil {
+				failed = append(failed, gin.H{"name": auth.Index, "error": errDelete.Error()})
+				continue
+			}
+			deleted++
+		}
+
+		if len(failed) > 0 {
+			c.JSON(http.StatusMultiStatus, gin.H{
+				"status":  "partial",
+				"deleted": deleted,
+				"failed":  failed,
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "deleted": deleted})
+		return
+	}
+
 	if all := c.Query("all"); all == "true" || all == "1" || all == "*" {
 		entries, err := os.ReadDir(h.cfg.AuthDir)
 		if err != nil {
@@ -885,6 +934,7 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 			targetPath = path
 		}
 	}
+	_ = targetID // Keep var usage to avoid lint errors
 	if !filepath.IsAbs(targetPath) {
 		if abs, errAbs := filepath.Abs(targetPath); errAbs == nil {
 			targetPath = abs
@@ -905,6 +955,78 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 		h.disableAuth(ctx, targetPath)
 	}
 	return filepath.Base(name), http.StatusOK, nil
+}
+
+func (h *Handler) safeBackupAndDelete(ctx context.Context, auth *coreauth.Auth, problemType string) (string, int, error) {
+	if auth == nil {
+		return "", http.StatusBadRequest, fmt.Errorf("invalid auth")
+	}
+	name := filepath.Base(auth.Index)
+	if !strings.HasSuffix(strings.ToLower(name), ".json") {
+		name += ".json"
+	}
+	targetPath := ""
+	if path := strings.TrimSpace(authAttribute(auth, "path")); path != "" {
+		targetPath = path
+	}
+	if targetPath == "" {
+		targetPath = filepath.Join(h.cfg.AuthDir, name)
+	}
+	if !filepath.IsAbs(targetPath) {
+		if abs, errAbs := filepath.Abs(targetPath); errAbs == nil {
+			targetPath = abs
+		}
+	}
+
+	backupDir := h.cfg.AutoCleanAuth.BackupDir
+	if backupDir == "" {
+		backupDir = "backup"
+	}
+	if !filepath.IsAbs(backupDir) {
+		backupDir = filepath.Join(h.cfg.AuthDir, backupDir)
+	}
+
+	safeProblemType := strings.ReplaceAll(problemType, " ", "_")
+	safeProblemType = strings.ReplaceAll(safeProblemType, "/", "_")
+	safeProblemType = strings.ReplaceAll(safeProblemType, "\\", "_")
+	if safeProblemType == "" {
+		safeProblemType = "unknown_error"
+	}
+	// Truncate to avoid too long path names
+	if len(safeProblemType) > 50 {
+		safeProblemType = safeProblemType[:50]
+	}
+
+	destDir := filepath.Join(backupDir, safeProblemType)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return filepath.Base(targetPath), http.StatusInternalServerError, fmt.Errorf("failed to create backup dir: %w", err)
+	}
+
+	destPath := filepath.Join(destDir, filepath.Base(targetPath))
+
+	if errRename := os.Rename(targetPath, destPath); errRename != nil {
+		if os.IsNotExist(errRename) {
+			// Ignore if already deleted
+		} else {
+			input, errRead := os.ReadFile(targetPath)
+			if errRead == nil {
+				_ = os.WriteFile(destPath, input, 0644)
+				_ = os.Remove(targetPath)
+			}
+		}
+	}
+
+	if errDeleteRecord := h.deleteTokenRecord(ctx, targetPath); errDeleteRecord != nil {
+		return filepath.Base(targetPath), http.StatusInternalServerError, errDeleteRecord
+	}
+	targetID := strings.TrimSpace(auth.ID)
+	if targetID != "" {
+		h.disableAuth(ctx, targetID)
+	} else {
+		h.disableAuth(ctx, targetPath)
+	}
+
+	return filepath.Base(targetPath), http.StatusOK, nil
 }
 
 func (h *Handler) findAuthForDelete(name string) *coreauth.Auth {

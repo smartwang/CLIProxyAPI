@@ -170,6 +170,21 @@ func (c *Client) DeleteAuthFile(name string) error {
 	return nil
 }
 
+// DeleteAuthFilesByStatus deletes all auth files with a specific status.
+func (c *Client) DeleteAuthFilesByStatus(status string) error {
+	query := url.Values{}
+	query.Set("status", status)
+	path := "/v0/management/auth-files?" + query.Encode()
+	_, code, err := c.doRequest("DELETE", path, nil)
+	if err != nil {
+		return err
+	}
+	if code >= 400 {
+		return fmt.Errorf("bulk delete failed (HTTP %d)", code)
+	}
+	return nil
+}
+
 // ToggleAuthFile enables or disables an auth file.
 func (c *Client) ToggleAuthFile(name string, disabled bool) error {
 	body, _ := json.Marshal(map[string]any{"name": name, "disabled": disabled})
